@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS 
+        "display.c"
+    INCLUDE_DIRS 
+        "."
+    REQUIRES 
+        driver
+        esp_lcd
+        esp_lcd_sh8601
+        esp_lcd_touch_ft5x06
+        esp_io_expander_tca9554
+        lvgl
+        esp_timer
+)
