@@ -2,7 +2,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "driver/spi_master.h"
 #include "esp_timer.h"
 #include "esp_lcd_panel_io.h"
@@ -137,25 +137,49 @@ static void example_lvgl_rounder_cb(struct _lv_disp_drv_t *disp_drv, lv_area_t *
 
 #if EXAMPLE_USE_TOUCH
 // LVGL触摸读取回调
+/**
+ * @brief LVGL触摸读取回调函数
+ *
+ * 该回调函数用于从触摸驱动读取当前的触摸点信息，并将其传递给LVGL输入设备驱动。
+ * LVGL会定期调用此函数以获取最新的触摸状态和坐标。
+ *
+ * @param drv  LVGL输入设备驱动指针，user_data中存放了触摸驱动句柄
+ * @param data LVGL输入数据结构体指针，用于返回触摸点坐标和状态
+ */
 static void example_lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 {
+    // 从LVGL输入设备驱动的user_data中获取触摸驱动句柄
     esp_lcd_touch_handle_t tp = (esp_lcd_touch_handle_t)drv->user_data;
-    assert(tp);
+    assert(tp); // 确保触摸驱动句柄有效
 
-    uint16_t tp_x;
-    uint16_t tp_y;
-    uint8_t tp_cnt = 0;
+    uint16_t tp_x;      // 用于存储触摸点的X坐标
+    uint16_t tp_y;      // 用于存储触摸点的Y坐标
+    uint8_t tp_cnt = 0; // 用于存储检测到的触摸点数量
+
+    // 读取触摸芯片的原始数据，更新内部状态
     esp_lcd_touch_read_data(tp);
+
+    // 获取第一个触摸点的坐标和触摸点数量
+    // 参数说明：
+    //   tp         - 触摸驱动句柄
+    //   &tp_x      - 用于返回X坐标
+    //   &tp_y      - 用于返回Y坐标
+    //   NULL       - 不需要压力值
+    //   &tp_cnt    - 用于返回触摸点数量
+    //   1          - 只获取第一个触摸点
     bool tp_pressed = esp_lcd_touch_get_coordinates(tp, &tp_x, &tp_y, NULL, &tp_cnt, 1);
+
     if (tp_pressed && tp_cnt > 0)
     {
-        data->point.x = tp_x;
-        data->point.y = tp_y;
-        data->state = LV_INDEV_STATE_PRESSED;
-        ESP_LOGD(TAG, "Touch position: %d,%d", tp_x, tp_y);
+        // 如果检测到触摸且有触摸点
+        data->point.x = tp_x;                  // 设置LVGL输入数据的X坐标
+        data->point.y = tp_y;                  // 设置LVGL输入数据的Y坐标
+        data->state = LV_INDEV_STATE_PRESSED;  // 设置为按下状态
+        ESP_LOGD(TAG, "Touch position: %d,%d", tp_x, tp_y); // 打印调试信息
     }
     else
     {
+        // 未检测到触摸，设置为释放状态
         data->state = LV_INDEV_STATE_RELEASED;
     }
 }
@@ -202,22 +226,28 @@ esp_err_t display_init(void)
     static lv_disp_draw_buf_t disp_buf;
     static lv_disp_drv_t disp_drv;
 
-    // 1. 初始化I2C总线
+    // 1. 初始化I2C总线 - 使用新的I2C API
     ESP_LOGI(TAG, "Initialize I2C bus");
-    const i2c_config_t i2c_conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = EXAMPLE_PIN_NUM_TOUCH_SDA,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+    
+    // 创建I2C主总线配置
+    i2c_master_bus_config_t i2c_bus_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = TOUCH_HOST,
         .scl_io_num = EXAMPLE_PIN_NUM_TOUCH_SCL,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = 200 * 1000,
+        .sda_io_num = EXAMPLE_PIN_NUM_TOUCH_SDA,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true, // 启用内部上拉电阻
     };
-    ESP_ERROR_CHECK(i2c_param_config(TOUCH_HOST, &i2c_conf));
-    ESP_ERROR_CHECK(i2c_driver_install(TOUCH_HOST, i2c_conf.mode, 0, 0, 0));
+    
+    // 创建I2C主总线句柄
+    i2c_master_bus_handle_t i2c_bus_handle = NULL;
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_config, &i2c_bus_handle));
 
-    // 2. 初始化IO扩展器
+    // 2. 初始化IO扩展器 - 使用新的I2C API
     esp_io_expander_handle_t io_expander = NULL;
-    ESP_ERROR_CHECK(esp_io_expander_new_i2c_tca9554(TOUCH_HOST, ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000, &io_expander));
+    ESP_ERROR_CHECK(esp_io_expander_new_i2c_tca9554(i2c_bus_handle, ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000, &io_expander));
+    
+    // 配置IO扩展器
     esp_io_expander_set_dir(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1 | IO_EXPANDER_PIN_NUM_2, IO_EXPANDER_OUTPUT);
     esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_0, 0);
     esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_1, 0);
@@ -271,10 +301,13 @@ esp_err_t display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 
 #if EXAMPLE_USE_TOUCH
-    // 6. 初始化触摸芯片
+    // 6. 初始化触摸芯片 - 使用新的I2C API
     esp_lcd_panel_io_handle_t tp_io_handle = NULL;
-    const esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_FT5x06_CONFIG();
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t)TOUCH_HOST, &tp_io_config, &tp_io_handle));
+    esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_FT5x06_CONFIG();
+    tp_io_config.scl_speed_hz = 100 * 1000;
+    
+    // 使用新的I2C API创建触摸面板IO
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus_handle, &tp_io_config, &tp_io_handle));
 
     const esp_lcd_touch_config_t tp_cfg = {
         .x_max = EXAMPLE_LCD_H_RES,
